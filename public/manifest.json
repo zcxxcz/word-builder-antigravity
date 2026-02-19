@@ -1,0 +1,22 @@
+{
+    "name": "初一背单词",
+    "short_name": "背单词",
+    "description": "外研版新课标初一词汇学习工具，回想+拼写双步训练法",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0f0f1a",
+    "theme_color": "#6366f1",
+    "orientation": "portrait",
+    "icons": [
+        {
+            "src": "/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}
