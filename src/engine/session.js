@@ -201,7 +201,7 @@ export class StudySession {
      */
     async saveSession() {
         const report = this.getReport();
-        await db.sessions.add({
+        const sessionData = {
             date: todayStr(),
             learnedCount: report.newWords,
             reviewCount: report.reviewWords,
@@ -211,7 +211,14 @@ export class StudySession {
             duration: Math.round((new Date() - new Date(report.startedAt)) / 1000),
             hardestWord: report.hardestWord,
             masteredNew: report.masteredNew,
-        });
+            createdAt: new Date().toISOString(),
+        };
+        await db.sessions.add(sessionData);
+
+        // Push session to cloud (fire-and-forget)
+        import('../services/sync.js').then(({ pushSession }) => {
+            pushSession(sessionData).catch(() => { });
+        }).catch(() => { });
 
         trackEvent('session_complete', report);
     }

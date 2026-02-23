@@ -1,8 +1,11 @@
 /**
- * Settings Page - Configuration, data import/export
+ * Settings Page - Configuration, account, sync, data import/export
  */
 import db, { getSetting, setSetting, exportAllData, importAllData, clearAllData, initDefaultSettings } from '../db.js';
 import { showToast, confirmDialog } from '../utils/helpers.js';
+import { getUser, isLoggedIn, signOut } from '../services/auth.js';
+import { fullSync, getOnlineStatus } from '../services/sync.js';
+import { navigateTo } from '../router.js';
 
 export async function renderSettings(container) {
   const dailyNew = await getSetting('dailyNew');
@@ -10,17 +13,56 @@ export async function renderSettings(container) {
   const relapseCap = await getSetting('relapseCap');
   const ttsEnabled = await getSetting('ttsEnabled');
   const activeWordlistId = await getSetting('activeWordlistId');
+  const lastSyncAt = await getSetting('lastSyncAt');
   const wordlists = await db.wordlists.toArray();
+  const user = getUser();
 
   const wordlistOptions = wordlists.map(wl =>
     `<option value="${wl.id}" ${activeWordlistId === wl.id ? 'selected' : ''}>${wl.name}</option>`
   ).join('');
+
+  const lastSyncDisplay = lastSyncAt
+    ? new Date(lastSyncAt).toLocaleString('zh-CN')
+    : '从未同步';
 
   container.innerHTML = `
     <div class="page">
       <div class="page-header">
         <h1 class="page-title">设置</h1>
         <p class="page-subtitle">个性化你的学习体验</p>
+      </div>
+
+      <!-- Account Section -->
+      <div class="settings-group">
+        <div class="settings-group-title">账号与同步</div>
+        
+        ${user ? `
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-label">📧 ${user.email}</div>
+            <div class="settings-item-desc">已登录</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btn-logout">登出</button>
+        </div>
+
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-label">☁️ 云端同步</div>
+            <div class="settings-item-desc">上次同步：${lastSyncDisplay}</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btn-sync">
+            ${getOnlineStatus() ? '立即同步' : '离线中'}
+          </button>
+        </div>
+        ` : `
+        <div class="settings-item" style="cursor:pointer;" id="btn-login">
+          <div>
+            <div class="settings-item-label">🔐 登录 / 注册</div>
+            <div class="settings-item-desc">登录后可跨设备同步学习数据</div>
+          </div>
+          <span style="color:var(--text-muted);">▶</span>
+        </div>
+        `}
       </div>
 
       <div class="settings-group">
@@ -106,13 +148,52 @@ export async function renderSettings(container) {
       </div>
 
       <div style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:12px;">
-        <p>初一背单词 v1.0</p>
-        <p style="margin-top:4px;">数据存储在本地浏览器中</p>
+        <p>初一背单词 v1.1</p>
+        <p style="margin-top:4px;">${user ? '数据已同步到云端' : '数据存储在本地浏览器中'}</p>
       </div>
     </div>
   `;
 
-  // Settings change handlers
+  // ─── Event Bindings ───
+
+  // Account
+  if (user) {
+    container.querySelector('#btn-logout').onclick = async () => {
+      const confirmed = await confirmDialog('确定要登出吗？本地数据会保留。');
+      if (!confirmed) return;
+      await signOut();
+      showToast('已登出', 'info');
+      renderSettings(container); // Re-render
+    };
+
+    const syncBtn = container.querySelector('#btn-sync');
+    if (syncBtn) {
+      syncBtn.onclick = async () => {
+        if (!getOnlineStatus()) {
+          showToast('当前离线，无法同步', 'error');
+          return;
+        }
+        syncBtn.disabled = true;
+        syncBtn.textContent = '同步中...';
+        try {
+          await fullSync();
+          showToast('✅ 同步完成', 'success');
+          renderSettings(container); // Re-render to show new time
+        } catch (err) {
+          showToast('同步失败：' + err.message, 'error');
+          syncBtn.disabled = false;
+          syncBtn.textContent = '立即同步';
+        }
+      };
+    }
+  } else {
+    const loginBtn = container.querySelector('#btn-login');
+    if (loginBtn) {
+      loginBtn.onclick = () => navigateTo('login');
+    }
+  }
+
+  // Learning params
   const debounceSet = (id, key) => {
     const el = container.querySelector(id);
     el.onchange = async () => {

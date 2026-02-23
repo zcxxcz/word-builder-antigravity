@@ -11,6 +11,23 @@ db.version(1).stores({
     events: '++id, type, data, timestamp'
 });
 
+// Schema v2: add sync fields
+db.version(2).stores({
+    wordlists: '++id, name, source, createdAt',
+    words: '++id, wordlistId, word, meaningCn, unit, phonetic, example1, example2, source',
+    userWordState: '++id, &wordId, level, lastSeenAt, nextReviewAt, wrongCount, correctStreak, updatedAt, syncStatus',
+    sessions: '++id, date, learnedCount, reviewCount, spellingAccuracy, duration, createdAt, syncStatus',
+    settings: 'key, updatedAt',
+    events: '++id, type, data, timestamp',
+    syncMeta: 'key'
+}).upgrade(tx => {
+    // Add updatedAt to existing userWordState records
+    return tx.table('userWordState').toCollection().modify(row => {
+        if (!row.updatedAt) row.updatedAt = new Date().toISOString();
+        if (!row.syncStatus) row.syncStatus = 'pending';
+    });
+});
+
 // Default settings
 const DEFAULT_SETTINGS = {
     dailyNew: 10,
@@ -94,11 +111,19 @@ export async function getWordState(wordId) {
 }
 
 export async function saveWordState(state) {
+    state.updatedAt = new Date().toISOString();
+    state.syncStatus = 'pending';
     if (state.id) {
         await db.userWordState.update(state.id, state);
     } else {
         state.id = await db.userWordState.add(state);
     }
+
+    // Real-time push to cloud (fire-and-forget, lazy import to avoid circular deps)
+    import('./services/sync.js').then(({ pushSingleWordState }) => {
+        pushSingleWordState(state.wordId).catch(() => { });
+    }).catch(() => { });
+
     return state;
 }
 
