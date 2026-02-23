@@ -56,7 +56,7 @@ async function handleRoute() {
     }
 }
 
-export function initRouter() {
+export function initRouter(defaultRoute) {
     // Listen for hash changes
     window.addEventListener('hashchange', handleRoute);
 
@@ -68,5 +68,9 @@ export function initRouter() {
     });
 
     // Initial route
-    handleRoute();
+    if (defaultRoute) {
+        navigateTo(defaultRoute);
+    } else {
+        handleRoute();
+    }
 }

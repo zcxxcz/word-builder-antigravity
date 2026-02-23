@@ -2,7 +2,6 @@
  * Login / Register Page
  */
 import { signIn, signUp, getUser } from '../services/auth.js';
-import { fullSync } from '../services/sync.js';
 import { navigateTo } from '../router.js';
 import { showToast } from '../utils/helpers.js';
 
@@ -31,7 +30,7 @@ function buildLoginHTML(isRegister) {
       <div class="login-container">
         <div class="login-logo">📖</div>
         <h1 class="login-title">初一背单词</h1>
-        <p class="login-subtitle">${isRegister ? '创建新账号' : '登录以同步学习数据'}</p>
+        <p class="login-subtitle">${isRegister ? '创建新账号' : '登录你的账号'}</p>
 
         <form id="auth-form" class="login-form">
           <div class="form-group">
@@ -64,9 +63,7 @@ function buildLoginHTML(isRegister) {
       : '没有账号？<a href="#" id="switch-mode">注册</a>'}
         </div>
 
-        <div class="login-skip">
-          <a href="#" id="skip-login">跳过登录，仅本地使用</a>
-        </div>
+
       </div>
     </div>
   `;
@@ -76,7 +73,7 @@ function bindEvents(container, getMode, setMode) {
   const form = container.querySelector('#auth-form');
   const errorEl = container.querySelector('#auth-error');
   const switchBtn = container.querySelector('#switch-mode');
-  const skipBtn = container.querySelector('#skip-login');
+
 
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -122,8 +119,7 @@ function bindEvents(container, getMode, setMode) {
         showToast('✅ 登录成功！', 'success');
       }
 
-      // Trigger full sync after login
-      fullSync().catch(err => console.warn('Post-login sync failed:', err));
+
 
       // Navigate to main app
       navigateTo('today');
@@ -149,12 +145,7 @@ function bindEvents(container, getMode, setMode) {
     };
   }
 
-  if (skipBtn) {
-    skipBtn.onclick = (e) => {
-      e.preventDefault();
-      navigateTo('today');
-    };
-  }
+
 }
 
 function showError(el, msg) {

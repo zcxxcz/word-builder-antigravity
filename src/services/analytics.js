@@ -1,8 +1,7 @@
 /**
  * Lightweight Analytics / Event Tracking
- * Events are stored locally in IndexedDB for export
+ * Events are logged to console only (no local storage)
  */
-import db from '../db.js';
 
 /**
  * Track an event
@@ -10,30 +9,19 @@ import db from '../db.js';
  * @param {Object} data - Event data
  */
 export function trackEvent(type, data = {}) {
-    // Fire and forget — don't await
-    db.events.add({
-        type,
-        data,
-        timestamp: new Date().toISOString()
-    }).catch(err => {
-        console.warn('Analytics tracking failed:', err);
-    });
+    console.debug('[analytics]', type, data);
 }
 
 /**
- * Get events for a date range
+ * Get events for a date range (no-op without local storage)
  */
 export async function getEvents(startDate, endDate) {
-    const events = await db.events
-        .where('timestamp')
-        .between(startDate, endDate + 'Z')
-        .toArray();
-    return events;
+    return [];
 }
 
 /**
- * Get all events
+ * Get all events (no-op without local storage)
  */
 export async function getAllEvents() {
-    return db.events.toArray();
+    return [];
 }

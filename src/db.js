@@ -1,186 +1,125 @@
-import Dexie from 'dexie';
+/**
+ * db.js — Thin compatibility wrapper over api.js
+ * Keeps the same export names so that modules don't need massive refactors.
+ * All data now comes from Supabase (no IndexedDB / Dexie).
+ */
+import * as api from './services/api.js';
 
-const db = new Dexie('WordBuilderDB');
-
-db.version(1).stores({
-    wordlists: '++id, name, source, createdAt',
-    words: '++id, wordlistId, word, meaningCn, unit, phonetic, example1, example2, source',
-    userWordState: '++id, &wordId, level, lastSeenAt, nextReviewAt, wrongCount, correctStreak',
-    sessions: '++id, date, learnedCount, reviewCount, spellingAccuracy, duration',
-    settings: 'key',
-    events: '++id, type, data, timestamp'
-});
-
-// Schema v2: add sync fields
-db.version(2).stores({
-    wordlists: '++id, name, source, createdAt',
-    words: '++id, wordlistId, word, meaningCn, unit, phonetic, example1, example2, source',
-    userWordState: '++id, &wordId, level, lastSeenAt, nextReviewAt, wrongCount, correctStreak, updatedAt, syncStatus',
-    sessions: '++id, date, learnedCount, reviewCount, spellingAccuracy, duration, createdAt, syncStatus',
-    settings: 'key, updatedAt',
-    events: '++id, type, data, timestamp',
-    syncMeta: 'key'
-}).upgrade(tx => {
-    // Add updatedAt to existing userWordState records
-    return tx.table('userWordState').toCollection().modify(row => {
-        if (!row.updatedAt) row.updatedAt = new Date().toISOString();
-        if (!row.syncStatus) row.syncStatus = 'pending';
-    });
-});
-
-// Default settings
-const DEFAULT_SETTINGS = {
-    dailyNew: 10,
-    reviewCap: 40,
-    relapseCap: 10,
+// ─── Settings ─────────────────────────────────────────────
+const DEFAULTS = {
+    dailyNewWords: 10,
+    dailyReviewCap: 50,
     ttsEnabled: true,
-    ttsRate: 0.9,
-    activeWordlistId: null, // null = all wordlists
+    ttsRate: 1,
+    activeWordlistId: 'builtin_1',
 };
 
 export async function getSetting(key) {
-    const row = await db.settings.get(key);
-    if (row) return row.value;
-    return DEFAULT_SETTINGS[key] ?? null;
+    const val = await api.getSetting(key);
+    return val !== undefined ? val : DEFAULTS[key];
 }
 
 export async function setSetting(key, value) {
-    await db.settings.put({ key, value });
-}
-
-export async function getAllSettings() {
-    const all = {};
-    for (const k of Object.keys(DEFAULT_SETTINGS)) {
-        all[k] = await getSetting(k);
-    }
-    return all;
+    return api.setSetting(key, value);
 }
 
 export async function initDefaultSettings() {
-    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
-        const existing = await db.settings.get(k);
-        if (!existing) {
-            await db.settings.put({ key: k, value: v });
+    const existing = await api.getAllSettings();
+    for (const [key, def] of Object.entries(DEFAULTS)) {
+        if (!(key in existing)) {
+            await api.setSetting(key, def);
         }
     }
 }
 
-// Check if built-in word lists are already imported
-export async function isBuiltinImported() {
-    const count = await db.wordlists.where('source').equals('builtin').count();
-    return count > 0;
-}
-
-// Import built-in word list
-export async function importBuiltinWordlist(name, words, source) {
-    const id = await db.wordlists.add({
-        name,
-        source: 'builtin',
-        createdAt: new Date().toISOString()
-    });
-
-    const wordRows = words.map(w => ({
-        wordlistId: id,
-        word: w.word,
-        meaningCn: w.meaning_cn,
-        unit: w.unit,
-        phonetic: w.phonetic || '',
-        example1: w.example || '',
-        example2: '',
-        source: source
-    }));
-
-    await db.words.bulkAdd(wordRows);
-    return id;
-}
-
-// Get or create user word state
-export async function getWordState(wordId) {
-    let state = await db.userWordState.where('wordId').equals(wordId).first();
-    if (!state) {
-        state = {
-            wordId,
-            level: 0,
-            lastSeenAt: null,
-            nextReviewAt: null,
-            wrongCount: 0,
-            correctStreak: 0
-        };
-    }
-    return state;
+// ─── Word State ───────────────────────────────────────────
+export async function getWordState(wordText) {
+    return api.getWordState(wordText);
 }
 
 export async function saveWordState(state) {
-    state.updatedAt = new Date().toISOString();
-    state.syncStatus = 'pending';
-    if (state.id) {
-        await db.userWordState.update(state.id, state);
-    } else {
-        state.id = await db.userWordState.add(state);
-    }
-
-    // Real-time push to cloud (fire-and-forget, lazy import to avoid circular deps)
-    import('./services/sync.js').then(({ pushSingleWordState }) => {
-        pushSingleWordState(state.wordId).catch(() => { });
-    }).catch(() => { });
-
-    return state;
+    return api.saveWordState(state);
 }
 
-// Get all words with state
+/**
+ * Get words merged with their user states.
+ * @param {string|null} wordlistId — e.g. "builtin_1", "custom_3", or null for all
+ */
 export async function getWordsWithState(wordlistId) {
-    const words = wordlistId
-        ? await db.words.where('wordlistId').equals(wordlistId).toArray()
-        : await db.words.toArray();
-
-    const states = await db.userWordState.toArray();
-    const stateMap = new Map(states.map(s => [s.wordId, s]));
-
-    return words.map(w => ({
-        ...w,
-        state: stateMap.get(w.id) || { level: 0, nextReviewAt: null, wrongCount: 0, correctStreak: 0 }
-    }));
-}
-
-// Export all data as JSON
-export async function exportAllData() {
-    const [wordlists, words, userWordState, sessions, settings] = await Promise.all([
-        db.wordlists.toArray(),
-        db.words.toArray(),
-        db.userWordState.toArray(),
-        db.sessions.toArray(),
-        db.settings.toArray()
+    const [words, states] = await Promise.all([
+        wordlistId ? api.getWords(wordlistId) : api.getAllWords(),
+        api.getAllWordStates(),
     ]);
-    return { wordlists, words, userWordState, sessions, settings, exportedAt: new Date().toISOString() };
-}
+    const stateMap = new Map();
+    for (const s of states) stateMap.set(s.wordText, s);
 
-// Import data from JSON
-export async function importAllData(data) {
-    await db.transaction('rw', db.wordlists, db.words, db.userWordState, db.sessions, db.settings, async () => {
-        await db.wordlists.clear();
-        await db.words.clear();
-        await db.userWordState.clear();
-        await db.sessions.clear();
-        await db.settings.clear();
-
-        if (data.wordlists) await db.wordlists.bulkAdd(data.wordlists);
-        if (data.words) await db.words.bulkAdd(data.words);
-        if (data.userWordState) await db.userWordState.bulkAdd(data.userWordState);
-        if (data.sessions) await db.sessions.bulkAdd(data.sessions);
-        if (data.settings) await db.settings.bulkAdd(data.settings);
+    return words.map(w => {
+        const st = stateMap.get(w.word);
+        return {
+            ...w,
+            state: st || null,
+            level: st ? st.level : 0,
+            step: st ? st.step : 'A',
+            nextReview: st ? st.nextReview : null,
+            lastReviewed: st ? st.lastReviewed : null,
+        };
     });
 }
 
-// Clear all data
+// ─── Wordlists ────────────────────────────────────────────
+export async function getWordlists() {
+    return api.getWordlists();
+}
+
+export async function createCustomWordlist(name) {
+    return api.createCustomWordlist(name);
+}
+
+export async function addWordToList(wordlistId, wordData) {
+    return api.addCustomWord(wordlistId, wordData);
+}
+
+export async function importWordsToList(wordlistId, wordsArray) {
+    return api.addCustomWords(wordlistId, wordsArray);
+}
+
+// ─── Sessions ─────────────────────────────────────────────
+export async function saveSession(sessionData) {
+    return api.saveSession(sessionData);
+}
+
+export async function getSessions() {
+    return api.getSessions();
+}
+
+export async function getSessionsByDate(dateStr) {
+    return api.getSessionsByDate(dateStr);
+}
+
+// ─── Data management ──────────────────────────────────────
+export async function exportAllData() {
+    return api.exportAllData();
+}
+
+export async function importAllData(jsonData) {
+    // Import word states
+    if (jsonData.wordStates) {
+        for (const st of jsonData.wordStates) {
+            await api.saveWordState(st);
+        }
+    }
+    // Settings
+    if (jsonData.settings) {
+        for (const s of jsonData.settings) {
+            await api.setSetting(s.key, s.value);
+        }
+    }
+}
+
 export async function clearAllData() {
-    await db.transaction('rw', db.wordlists, db.words, db.userWordState, db.sessions, db.settings, db.events, async () => {
-        await db.wordlists.clear();
-        await db.words.clear();
-        await db.userWordState.clear();
-        await db.sessions.clear();
-        await db.settings.clear();
-        await db.events.clear();
-    });
+    return api.clearAllUserData();
 }
 
-export default db;
+// ─── Legacy no-ops (removed features) ────────────────────
+// These were Dexie-specific; keeping stubs so callers don't crash
+export const db = null; // No more Dexie instance

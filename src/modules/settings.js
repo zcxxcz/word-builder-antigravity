@@ -1,29 +1,23 @@
 /**
- * Settings Page - Configuration, account, sync, data import/export
+ * Settings Page - Configuration, account, data import/export
  */
-import db, { getSetting, setSetting, exportAllData, importAllData, clearAllData, initDefaultSettings } from '../db.js';
+import { getSetting, setSetting, exportAllData, importAllData, clearAllData, initDefaultSettings, getWordlists } from '../db.js';
 import { showToast, confirmDialog } from '../utils/helpers.js';
-import { getUser, isLoggedIn, signOut } from '../services/auth.js';
-import { fullSync, getOnlineStatus } from '../services/sync.js';
+import { getUser, signOut } from '../services/auth.js';
 import { navigateTo } from '../router.js';
 
 export async function renderSettings(container) {
-  const dailyNew = await getSetting('dailyNew');
-  const reviewCap = await getSetting('reviewCap');
-  const relapseCap = await getSetting('relapseCap');
-  const ttsEnabled = await getSetting('ttsEnabled');
+  const dailyNew = await getSetting('dailyNewWords') || 10;
+  const reviewCap = await getSetting('dailyReviewCap') || 50;
+  const relapseCap = await getSetting('relapseCap') || 10;
+  const ttsEnabled = await getSetting('ttsEnabled') !== false;
   const activeWordlistId = await getSetting('activeWordlistId');
-  const lastSyncAt = await getSetting('lastSyncAt');
-  const wordlists = await db.wordlists.toArray();
+  const wordlists = await getWordlists();
   const user = getUser();
 
   const wordlistOptions = wordlists.map(wl =>
-    `<option value="${wl.id}" ${activeWordlistId === wl.id ? 'selected' : ''}>${wl.name}</option>`
+    `<option value="${wl.id}" ${activeWordlistId === wl.id || activeWordlistId === wl.numericId ? 'selected' : ''}>${wl.name}</option>`
   ).join('');
-
-  const lastSyncDisplay = lastSyncAt
-    ? new Date(lastSyncAt).toLocaleString('zh-CN')
-    : '从未同步';
 
   container.innerHTML = `
     <div class="page">
@@ -34,31 +28,21 @@ export async function renderSettings(container) {
 
       <!-- Account Section -->
       <div class="settings-group">
-        <div class="settings-group-title">账号与同步</div>
+        <div class="settings-group-title">账号</div>
         
         ${user ? `
         <div class="settings-item">
           <div>
             <div class="settings-item-label">📧 ${user.email}</div>
-            <div class="settings-item-desc">已登录</div>
+            <div class="settings-item-desc">已登录（数据实时云端保存）</div>
           </div>
           <button class="btn btn-secondary btn-sm" id="btn-logout">登出</button>
-        </div>
-
-        <div class="settings-item">
-          <div>
-            <div class="settings-item-label">☁️ 云端同步</div>
-            <div class="settings-item-desc">上次同步：${lastSyncDisplay}</div>
-          </div>
-          <button class="btn btn-secondary btn-sm" id="btn-sync">
-            ${getOnlineStatus() ? '立即同步' : '离线中'}
-          </button>
         </div>
         ` : `
         <div class="settings-item" style="cursor:pointer;" id="btn-login">
           <div>
-            <div class="settings-item-label">🔐 登录 / 注册</div>
-            <div class="settings-item-desc">登录后可跨设备同步学习数据</div>
+            <div class="settings-item-label">🔐 你尚未登录</div>
+            <div class="settings-item-desc">本应用需要登录才能使用</div>
           </div>
           <span style="color:var(--text-muted);">▶</span>
         </div>
@@ -140,16 +124,15 @@ export async function renderSettings(container) {
 
         <div class="settings-item" style="cursor:pointer;" id="clear-data">
           <div>
-            <div class="settings-item-label" style="color:var(--danger);">🗑️ 清空全部数据</div>
-            <div class="settings-item-desc">删除所有词表和学习记录</div>
+            <div class="settings-item-label" style="color:var(--danger);">🗑️ 清空全部账号数据</div>
+            <div class="settings-item-desc">删除云端所有词表和学习记录</div>
           </div>
           <span style="color:var(--text-muted);">▶</span>
         </div>
       </div>
 
       <div style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:12px;">
-        <p>初一背单词 v1.1</p>
-        <p style="margin-top:4px;">${user ? '数据已同步到云端' : '数据存储在本地浏览器中'}</p>
+        <p>初一背单词 v2.0 (实时云端版)</p>
       </div>
     </div>
   `;
@@ -159,33 +142,12 @@ export async function renderSettings(container) {
   // Account
   if (user) {
     container.querySelector('#btn-logout').onclick = async () => {
-      const confirmed = await confirmDialog('确定要登出吗？本地数据会保留。');
+      const confirmed = await confirmDialog('确定要登出吗？');
       if (!confirmed) return;
       await signOut();
       showToast('已登出', 'info');
-      renderSettings(container); // Re-render
+      navigateTo('login');
     };
-
-    const syncBtn = container.querySelector('#btn-sync');
-    if (syncBtn) {
-      syncBtn.onclick = async () => {
-        if (!getOnlineStatus()) {
-          showToast('当前离线，无法同步', 'error');
-          return;
-        }
-        syncBtn.disabled = true;
-        syncBtn.textContent = '同步中...';
-        try {
-          await fullSync();
-          showToast('✅ 同步完成', 'success');
-          renderSettings(container); // Re-render to show new time
-        } catch (err) {
-          showToast('同步失败：' + err.message, 'error');
-          syncBtn.disabled = false;
-          syncBtn.textContent = '立即同步';
-        }
-      };
-    }
   } else {
     const loginBtn = container.querySelector('#btn-login');
     if (loginBtn) {
@@ -203,12 +165,12 @@ export async function renderSettings(container) {
     };
   };
 
-  debounceSet('#set-daily-new', 'dailyNew');
-  debounceSet('#set-review-cap', 'reviewCap');
+  debounceSet('#set-daily-new', 'dailyNewWords');
+  debounceSet('#set-review-cap', 'dailyReviewCap');
   debounceSet('#set-relapse-cap', 'relapseCap');
 
   container.querySelector('#set-active-wordlist').onchange = async (e) => {
-    const val = e.target.value ? parseInt(e.target.value) : null;
+    const val = e.target.value || null;
     await setSetting('activeWordlistId', val);
     showToast('✅ 已切换学习词表', 'success');
   };
@@ -220,20 +182,25 @@ export async function renderSettings(container) {
 
   // Export
   container.querySelector('#export-data').onclick = async () => {
-    const data = await exportAllData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `word-builder-backup-${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('✅ 数据已导出', 'success');
+    showToast('正在准备导出数据...', 'info');
+    try {
+      const data = await exportAllData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `word-builder-backup-${new Date().toISOString().split('T')[0]}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('✅ 数据已导出', 'success');
+    } catch (err) {
+      showToast('导出失败: ' + err.message, 'error');
+    }
   };
 
   // Import
   container.querySelector('#import-data').onclick = async () => {
-    const confirmed = await confirmDialog('导入将覆盖当前全部数据，确定继续？');
+    const confirmed = await confirmDialog('导入将覆盖云端数据，确定继续？');
     if (!confirmed) return;
 
     const input = document.createElement('input');
@@ -245,8 +212,9 @@ export async function renderSettings(container) {
       try {
         const text = await file.text();
         const data = JSON.parse(text);
+        showToast('正在导入数据...', 'info');
         await importAllData(data);
-        showToast('✅ 数据已导入，正在刷新...', 'success');
+        showToast('✅ 数据已导入，重新加载中...', 'success');
         setTimeout(() => location.reload(), 1000);
       } catch (err) {
         showToast('导入失败：' + err.message, 'error');
@@ -257,13 +225,17 @@ export async function renderSettings(container) {
 
   // Clear
   container.querySelector('#clear-data').onclick = async () => {
-    const confirmed1 = await confirmDialog('⚠️ 确定要清空全部数据？此操作不可恢复！');
+    const confirmed1 = await confirmDialog('⚠️ 确定要清空云端全部数据？此操作不可恢复！');
     if (!confirmed1) return;
-    const confirmed2 = await confirmDialog('⚠️ 最后确认：真的要删除所有词表和学习记录吗？');
+    const confirmed2 = await confirmDialog('⚠️ 最后确认：真的要删除所有词汇和学习记录吗？');
     if (!confirmed2) return;
 
-    await clearAllData();
-    showToast('数据已清空，正在重新初始化...', 'success');
-    setTimeout(() => location.reload(), 1000);
+    try {
+      await clearAllData();
+      showToast('数据已清空，正在重新加载...', 'success');
+      setTimeout(() => location.reload(), 1000);
+    } catch (err) {
+      showToast('清理失败: ' + err.message, 'error');
+    }
   };
 }

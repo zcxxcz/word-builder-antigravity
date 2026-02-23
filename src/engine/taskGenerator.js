@@ -6,7 +6,7 @@
  * 2. New words (never studied), up to daily_new — prioritize active wordlist
  * 3. Relapse words are added dynamically during session
  */
-import db, { getWordState, getAllSettings, getSetting } from '../db.js';
+import { getWordsWithState, getSetting, getWordlists } from '../db.js';
 import { isDueForReview, isNewWord, todayStr } from './srs.js';
 
 /**
@@ -14,118 +14,108 @@ import { isDueForReview, isNewWord, todayStr } from './srs.js';
  * @param {Object} options - { wordlistIds: number[]|null, mode: 'all'|'review'|'new' }
  */
 export async function generateDailyTasks(options = {}) {
-    const settings = await getAllSettings();
-    const { dailyNew, reviewCap } = settings;
+    const dailyNew = await getSetting('dailyNewWords') || 10;
+    const reviewCap = await getSetting('dailyReviewCap') || 50;
     const mode = options.mode || 'all';
 
-    // Get ALL words (reviews come from all wordlists)
-    const allWords = await db.words.toArray();
-
-    // Load all word states
-    const states = await db.userWordState.toArray();
-    const stateMap = new Map(states.map(s => [s.wordId, s]));
+    // Get ALL words with their states from Supabase
+    const allWordsWithState = await getWordsWithState(null);
 
     const reviews = [];
 
-    for (const word of allWords) {
-        const state = stateMap.get(word.id);
-        if (state && isDueForReview(state)) {
-            reviews.push({ word, state });
+    for (const w of allWordsWithState) {
+        if (w.state && isDueForReview(w.state)) {
+            reviews.push({ word: w, state: w.state });
         }
     }
 
-    // Sort reviews: most overdue first
+    // Sort reviews by urgency: most overdue first
     reviews.sort((a, b) => {
-        const dateA = a.state.nextReviewAt || '9999';
-        const dateB = b.state.nextReviewAt || '9999';
-        return dateA.localeCompare(dateB);
+        const aDate = a.state.nextReview || '1970-01-01';
+        const bDate = b.state.nextReview || '1970-01-01';
+        return aDate.localeCompare(bDate);
     });
 
-    // --- New words: prioritize active wordlist, fallback to others ---
-    const { newWords, activeListExhausted, fallbackUsed, activeListName } =
-        await pickNewWords(allWords, stateMap, dailyNew, settings.activeWordlistId);
+    // Cap reviews
+    const cappedReviews = reviews.slice(0, reviewCap);
 
-    // Apply caps
-    let finalReviews = mode === 'new' ? [] : reviews.slice(0, reviewCap);
-    let finalNew = mode === 'review' ? [] : newWords;
-
-    // Build queue: reviews first, then new words
-    const queue = [...finalReviews, ...finalNew];
-
-    return {
-        queue,
-        reviews: finalReviews,
-        newWords: finalNew,
-        totalCount: queue.length,
-        reviewCount: finalReviews.length,
-        newCount: finalNew.length,
-        estimatedMinutes: Math.ceil(queue.length * 0.5),
-        activeListExhausted,
-        fallbackUsed,
-        activeListName,
-    };
-}
-
-/**
- * Pick new words: prioritize active wordlist, fallback to others if exhausted
- */
-async function pickNewWords(allWords, stateMap, dailyNew, activeWordlistId) {
-    let activeListName = null;
-    let activeListExhausted = false;
-    let fallbackUsed = false;
-
-    // Separate new words by wordlist
-    const allNew = allWords.filter(w => isNewWord(stateMap.get(w.id)));
-
-    if (!activeWordlistId) {
-        // No active list set — pick from all, original order
+    if (mode === 'review') {
         return {
-            newWords: allNew.slice(0, dailyNew).map(w => ({ word: w, state: null })),
-            activeListExhausted: false,
+            queue: cappedReviews,
+            stats: { reviewCount: cappedReviews.length, newCount: 0 },
+            fallbackUsed: false,
+            activeListName: null,
+        };
+    }
+
+    // Find new words
+    const allNew = allWordsWithState.filter(w => isNewWord(w.state));
+
+    // Get active wordlist
+    const activeWordlistId = await getSetting('activeWordlistId');
+    let activeListName = null;
+
+    if (mode === 'new' || !activeWordlistId) {
+        const newWords = allNew.slice(0, dailyNew).map(w => ({ word: w, state: null }));
+        return {
+            queue: [...cappedReviews, ...newWords],
+            stats: { reviewCount: cappedReviews.length, newCount: newWords.length },
             fallbackUsed: false,
             activeListName: null,
         };
     }
 
     // Get active list name for display
-    const activeList = await db.wordlists.get(activeWordlistId);
+    const lists = await getWordlists();
+    const activeList = lists.find(l => l.id === activeWordlistId || l.numericId === activeWordlistId);
     activeListName = activeList?.name || '未知词表';
 
     // New words from active list
-    const activeNew = allNew.filter(w => w.wordlistId === activeWordlistId);
-    // New words from other lists (preserve DB order)
-    const otherNew = allNew.filter(w => w.wordlistId !== activeWordlistId);
+    const activeNew = allNew.filter(w => {
+        const wlId = w.wordlistId;
+        return wlId === activeWordlistId ||
+            wlId === activeList?.numericId ||
+            `builtin_${wlId}` === activeWordlistId;
+    });
+    // New words from other lists (preserve order)
+    const otherNew = allNew.filter(w => !activeNew.includes(w));
 
     let picked = activeNew.slice(0, dailyNew).map(w => ({ word: w, state: null }));
 
-    if (activeNew.length === 0) {
-        activeListExhausted = true;
-    }
-
-    // If not enough from active list, fill from others
+    let fallbackUsed = false;
     if (picked.length < dailyNew && otherNew.length > 0) {
         const remaining = dailyNew - picked.length;
-        const extra = otherNew.slice(0, remaining).map(w => ({ word: w, state: null }));
-        picked = [...picked, ...extra];
-        if (extra.length > 0) {
-            fallbackUsed = true;
-        }
+        picked = [...picked, ...otherNew.slice(0, remaining).map(w => ({ word: w, state: null }))];
         if (activeNew.length === 0) {
-            activeListExhausted = true;
+            fallbackUsed = true;
         }
     }
 
-    return { newWords: picked, activeListExhausted, fallbackUsed, activeListName };
+    if (mode === 'new') {
+        return {
+            queue: picked,
+            stats: { reviewCount: 0, newCount: picked.length },
+            fallbackUsed,
+            activeListName,
+        };
+    }
+
+    return {
+        queue: [...cappedReviews, ...picked],
+        stats: { reviewCount: cappedReviews.length, newCount: picked.length },
+        fallbackUsed,
+        activeListName,
+    };
 }
 
 /**
  * Get stats for today page display (without generating full queue)
  */
 export async function getTodayStats() {
-    const settings = await getAllSettings();
-    const allWords = await db.words.toArray();
-    const states = await db.userWordState.toArray();
-    const stateMap = new Map(states.map(s => [s.wordId, s]));
+    const dailyNew = await getSetting('dailyNewWords') || 10;
+    const activeWordlistId = await getSetting('activeWordlistId');
+
+    const allWordsWithState = await getWordsWithState(null);
 
     let reviewCount = 0;
     let totalLearned = 0;
@@ -133,48 +123,51 @@ export async function getTodayStats() {
 
     const levelDist = [0, 0, 0, 0]; // L0, L1, L2, L3
 
-    for (const word of allWords) {
-        const state = stateMap.get(word.id);
-        if (state) {
-            if (isDueForReview(state)) reviewCount++;
+    for (const w of allWordsWithState) {
+        if (w.state) {
+            if (isDueForReview(w.state)) reviewCount++;
             totalLearned++;
-            levelDist[state.level || 0]++;
-            if (state.level === 3) masteredCount++;
+            levelDist[w.state.level || 0]++;
+            if (w.state.level === 3) masteredCount++;
         }
     }
 
     // Compute new word count respecting active wordlist
-    const activeWordlistId = settings.activeWordlistId;
-    const allNew = allWords.filter(w => isNewWord(stateMap.get(w.id)));
+    const allNew = allWordsWithState.filter(w => isNewWord(w.state));
 
     let newCount = 0;
     let activeListExhausted = false;
     let activeListName = null;
 
     if (!activeWordlistId) {
-        newCount = Math.min(allNew.length, settings.dailyNew);
+        newCount = Math.min(allNew.length, dailyNew);
     } else {
-        const activeList = await db.wordlists.get(activeWordlistId);
+        const lists = await getWordlists();
+        const activeList = lists.find(l => l.id === activeWordlistId || l.numericId === activeWordlistId);
         activeListName = activeList?.name || '未知词表';
 
-        const activeNew = allNew.filter(w => w.wordlistId === activeWordlistId);
-        const otherNew = allNew.filter(w => w.wordlistId !== activeWordlistId);
+        const activeNew = allNew.filter(w => {
+            const wlId = w.wordlistId;
+            return wlId === activeWordlistId ||
+                wlId === activeList?.numericId ||
+                `builtin_${wlId}` === activeWordlistId;
+        });
+        const otherNew = allNew.filter(w => !activeNew.includes(w));
 
         if (activeNew.length === 0) {
             activeListExhausted = true;
         }
 
-        newCount = Math.min(activeNew.length + otherNew.length, settings.dailyNew);
+        newCount = Math.min(activeNew.length + otherNew.length, dailyNew);
     }
 
     return {
-        reviewCount: Math.min(reviewCount, settings.reviewCap),
+        reviewCount,
         newCount,
-        totalWords: allWords.length,
         totalLearned,
         masteredCount,
+        totalWords: allWordsWithState.length,
         levelDist,
-        estimatedMinutes: Math.ceil((Math.min(reviewCount, settings.reviewCap) + newCount) * 0.5),
         activeListExhausted,
         activeListName,
     };

@@ -1,12 +1,13 @@
 /**
  * 初一背单词 Web App - Main Entry Point
+ * All data is fetched from Supabase (no local storage).
  */
 import './styles/index.css';
-import { registerRoute, initRouter } from './router.js';
-import db, { isBuiltinImported, importBuiltinWordlist, initDefaultSettings } from './db.js';
+
+import { registerRoute, initRouter, navigateTo } from './router.js';
+import { initDefaultSettings } from './db.js';
 import { preloadVoices } from './services/tts.js';
 import { initAuth, onAuthChange, isLoggedIn } from './services/auth.js';
-import { fullSync, setupNetworkListener } from './services/sync.js';
 
 // Page modules
 import { renderToday } from './modules/today.js';
@@ -16,29 +17,10 @@ import { renderProgress } from './modules/progress.js';
 import { renderSettings } from './modules/settings.js';
 import { renderLogin } from './modules/login.js';
 
-// Data
-import { grade7aWords } from './data/grade7a.js';
-import { grade7bWords } from './data/grade7b.js';
-
 async function init() {
   // Initialize auth first
   const user = await initAuth();
   console.log('Auth initialized:', user ? user.email : 'not logged in');
-
-  // Setup network online/offline listener
-  setupNetworkListener();
-
-  // Initialize default settings
-  await initDefaultSettings();
-
-  // Import built-in word lists if first time
-  const imported = await isBuiltinImported();
-  if (!imported) {
-    console.log('First launch: importing built-in word lists...');
-    await importBuiltinWordlist('七年级上册（外研版）', grade7aWords, 'waiyanbanseven_a');
-    await importBuiltinWordlist('七年级下册（外研版）', grade7bWords, 'waiyanbanseven_b');
-    console.log('Built-in word lists imported.');
-  }
 
   // Preload TTS voices
   preloadVoices();
@@ -51,31 +33,28 @@ async function init() {
   registerRoute('settings', renderSettings);
   registerRoute('login', renderLogin);
 
+  // If not logged in, force login page
+  if (!user) {
+    initRouter('login');
+    return;
+  }
+
+  // Initialize default settings (checks Supabase, only writes missing ones)
+  await initDefaultSettings();
+
   // Init router
   initRouter();
 
-  // If logged in, trigger initial sync
-  if (user) {
-    fullSync().catch(err => console.warn('Initial sync failed:', err));
-  }
-
-  // Listen for auth changes to start/stop sync
+  // Listen for auth changes
   onAuthChange((newUser, event) => {
     if (newUser) {
-      console.log('User logged in, starting sync...');
-      fullSync().catch(err => console.warn('Post-login sync failed:', err));
+      console.log('User logged in');
+      initDefaultSettings().catch(console.warn);
+    } else {
+      console.log('User logged out');
+      navigateTo('login');
     }
   });
-
-  // Register PWA service worker
-  if ('serviceWorker' in navigator) {
-    try {
-      await navigator.serviceWorker.register('/sw.js');
-      console.log('Service Worker registered');
-    } catch (err) {
-      console.warn('Service Worker registration failed:', err);
-    }
-  }
 }
 
 // Start app

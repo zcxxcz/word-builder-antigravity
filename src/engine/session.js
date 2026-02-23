@@ -7,7 +7,7 @@
  * - Session statistics collection
  * - Session persistence to DB
  */
-import db, { getWordState, saveWordState, getSetting } from '../db.js';
+import { getWordState, saveWordState, getSetting, saveSession as dbSaveSession } from '../db.js';
 import { processStepA, processStepB, todayStr } from './srs.js';
 import { trackEvent } from '../services/analytics.js';
 
@@ -78,7 +78,7 @@ export class StudySession {
         const item = this.queue[this.currentIndex];
 
         // Get fresh state from DB
-        let state = await getWordState(item.word.id);
+        let state = await getWordState(item.word.word) || { wordText: item.word.word };
 
         // Process Step A
         this.stepAResult = processStepA(state, selfEval);
@@ -105,7 +105,7 @@ export class StudySession {
         const item = this.queue[this.currentIndex];
 
         // Get fresh state from DB
-        let state = await getWordState(item.word.id);
+        let state = await getWordState(item.word.word) || { wordText: item.word.word };
         const oldLevel = state.level || 0;
 
         // Process Step B with Step A context
@@ -134,11 +134,6 @@ export class StudySession {
         // Level change tracking
         if (oldLevel !== newState.level) {
             this.stats.levelChanges.push({
-                word: item.word.word,
-                from: oldLevel,
-                to: newState.level
-            });
-            trackEvent('word_level_change', {
                 word: item.word.word,
                 from: oldLevel,
                 to: newState.level
@@ -213,12 +208,7 @@ export class StudySession {
             masteredNew: report.masteredNew,
             createdAt: new Date().toISOString(),
         };
-        await db.sessions.add(sessionData);
-
-        // Push session to cloud (fire-and-forget)
-        import('../services/sync.js').then(({ pushSession }) => {
-            pushSession(sessionData).catch(() => { });
-        }).catch(() => { });
+        await dbSaveSession(sessionData);
 
         trackEvent('session_complete', report);
     }

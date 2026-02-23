@@ -4,14 +4,14 @@
 import { getTodayStats } from '../engine/taskGenerator.js';
 import { getGreeting, getTodayDisplay } from '../utils/helpers.js';
 import { navigateTo } from '../router.js';
-import db from '../db.js';
+import { getSessions, getSessionsByDate } from '../db.js';
 
 export async function renderToday(container) {
   const stats = await getTodayStats();
 
   // Check today's sessions for streak
   const today = new Date().toISOString().split('T')[0];
-  const sessions = await db.sessions.where('date').equals(today).toArray();
+  const sessions = await getSessionsByDate(today);
   const todayCompleted = sessions.length > 0;
 
   // Calculate streak (simple: count consecutive days with sessions)
@@ -43,7 +43,7 @@ export async function renderToday(container) {
             <div class="stat-label">新学</div>
           </div>
           <div class="stat-item">
-            <div class="stat-number">~${stats.estimatedMinutes}min</div>
+            <div class="stat-number">~${Math.ceil((stats.reviewCount + stats.newCount) * 0.5)}min</div>
             <div class="stat-label">预计时长</div>
           </div>
         </div>
@@ -111,41 +111,39 @@ function startStudy(mode) {
 }
 
 async function renderTodayReport(sessions) {
-  const latest = sessions[sessions.length - 1];
+  const latest = sessions[0]; // ordered descending from API
   return `
     <div class="report-card">
       <div class="report-title">✅ 今日已完成</div>
       <div class="report-subtitle">继续保持！</div>
       <div class="report-stats">
         <div class="report-stat">
-          <div class="report-stat-value">${latest.totalWords || 0}</div>
+          <div class="report-stat-value">${latest.totalWords || latest.total_words || 0}</div>
           <div class="report-stat-label">学习词数</div>
         </div>
         <div class="report-stat">
-          <div class="report-stat-value">${latest.spellingAccuracy || 0}%</div>
+          <div class="report-stat-value">${Math.max(0, 100 - Math.round(((latest.wrongCount || latest.wrong_count || 0) / (latest.totalWords || latest.total_words || 1)) * 100))}%</div>
           <div class="report-stat-label">拼写正确率</div>
         </div>
         <div class="report-stat">
-          <div class="report-stat-value">${latest.masteredNew || 0}</div>
-          <div class="report-stat-label">新掌握</div>
+          <div class="report-stat-value">${latest.newWords || latest.new_words || 0}</div>
+          <div class="report-stat-label">新学词数</div>
         </div>
         <div class="report-stat">
-          <div class="report-stat-value">${Math.ceil((latest.duration || 0) / 60)}min</div>
+          <div class="report-stat-value">${Math.ceil((latest.durationSec || latest.duration_sec || 0) / 60)}min</div>
           <div class="report-stat-label">学习时长</div>
         </div>
       </div>
-      ${latest.hardestWord ? `<p class="text-muted" style="font-size:13px;">最难词：<strong>${latest.hardestWord}</strong></p>` : ''}
-      <button class="btn btn-secondary btn-sm mt-16" id="practice-more">🔄 再练5分钟（错词）</button>
+      <button class="btn btn-secondary btn-sm mt-16" id="practice-more">🔄 继续复习</button>
     </div>
   `;
 }
 
 async function calculateStreak() {
-  const sessions = await db.sessions.orderBy('date').reverse().toArray();
+  const sessions = await getSessions(); // returns desc by date
   if (sessions.length === 0) return 0;
 
-  const dates = [...new Set(sessions.map(s => s.date))];
-  dates.sort((a, b) => b.localeCompare(a)); // Newest first
+  const dates = [...new Set(sessions.map(s => (s.startedAt || s.started_at).split('T')[0]))];
 
   let streak = 0;
   const today = new Date();

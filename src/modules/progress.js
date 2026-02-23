@@ -1,49 +1,54 @@
 /**
  * Progress Page - Learning statistics and level distribution
  */
-import db from '../db.js';
+import { getWordsWithState, getSessions } from '../db.js';
 
 export async function renderProgress(container) {
-    const words = await db.words.toArray();
-    const states = await db.userWordState.toArray();
-    const sessions = await db.sessions.toArray();
+  const allWords = await getWordsWithState(null);
+  const sessions = await getSessions();
 
-    const stateMap = new Map(states.map(s => [s.wordId, s]));
+  // Calculate stats
+  let totalLearned = 0;
+  let mastered = 0;
+  const levelDist = [0, 0, 0, 0];
 
-    // Calculate stats
-    let totalLearned = 0;
-    let mastered = 0;
-    const levelDist = [0, 0, 0, 0];
-
-    for (const word of words) {
-        const state = stateMap.get(word.id);
-        if (state && state.lastSeenAt) {
-            totalLearned++;
-            const level = state.level || 0;
-            levelDist[level]++;
-            if (level === 3) mastered++;
-        }
+  for (const word of allWords) {
+    if (word.state && (word.state.lastReviewed || word.state.last_reviewed)) {
+      totalLearned++;
+      const level = word.state.level || 0;
+      levelDist[level]++;
+      if (level === 3) mastered++;
     }
+  }
 
-    // Week stats
-    const today = new Date();
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const weekAgoStr = weekAgo.toISOString().split('T')[0];
+  // Week stats
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const weekAgoStr = weekAgo.toISOString().split('T')[0];
 
-    const weekSessions = sessions.filter(s => s.date >= weekAgoStr);
-    const weekDays = new Set(weekSessions.map(s => s.date)).size;
-    const weekWords = weekSessions.reduce((sum, s) => sum + (s.totalWords || 0), 0);
-    const weekAvgAccuracy = weekSessions.length > 0
-        ? Math.round(weekSessions.reduce((sum, s) => sum + (s.spellingAccuracy || 0), 0) / weekSessions.length)
-        : 0;
+  function getSessionDate(s) {
+    return (s.startedAt || s.started_at).split('T')[0];
+  }
 
-    // Streak
-    const streak = calculateStreak(sessions);
+  const weekSessions = sessions.filter(s => getSessionDate(s) >= weekAgoStr);
+  const weekDays = new Set(weekSessions.map(s => getSessionDate(s))).size;
+  const weekWords = weekSessions.reduce((sum, s) => sum + (s.totalWords || s.total_words || 0), 0);
 
-    const maxLevel = Math.max(...levelDist, 1);
+  let avgAcc = 0;
+  if (weekSessions.length > 0) {
+    let totalW = weekSessions.reduce((s, x) => s + (x.totalWords || x.total_words || 0), 0);
+    let totalWc = weekSessions.reduce((s, x) => s + (x.wrongCount || x.wrong_count || 0), 0);
+    if (totalW > 0) avgAcc = Math.max(0, 100 - Math.round((totalWc / totalW) * 100));
+  }
+  const weekAvgAccuracy = avgAcc;
 
-    container.innerHTML = `
+  // Streak
+  const streak = calculateStreak(sessions);
+
+  const maxLevel = Math.max(...levelDist, 1);
+
+  container.innerHTML = `
     <div class="page">
       <div class="page-header">
         <h1 class="page-title">学习进度</h1>
@@ -60,7 +65,7 @@ export async function renderProgress(container) {
           <div class="stat-label">已掌握(L3)</div>
         </div>
         <div class="stat-item">
-          <div class="stat-number">${words.length}</div>
+          <div class="stat-number">${allWords.length}</div>
           <div class="stat-label">总词数</div>
         </div>
       </div>
@@ -153,18 +158,21 @@ export async function renderProgress(container) {
           <div class="card-header">
             <span class="card-title">📋 最近学习记录</span>
           </div>
-          ${sessions.slice(-5).reverse().map(s => `
+          ${sessions.slice(0, 5).map(s => {
+    const acc = s.totalWords > 0 ? Math.max(0, 100 - Math.round((s.wrongCount / s.totalWords) * 100)) : 0;
+    return `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);">
               <div>
-                <div style="font-size:14px;font-weight:500;">${s.date}</div>
-                <div style="font-size:12px;color:var(--text-muted);">${s.totalWords || 0} 词 · ${Math.ceil((s.duration || 0) / 60)}min</div>
+                <div style="font-size:14px;font-weight:500;">${getSessionDate(s)}</div>
+                <div style="font-size:12px;color:var(--text-muted);">${s.totalWords || s.total_words || 0} 词 · ${Math.ceil((s.durationSec || s.duration_sec || 0) / 60)}min</div>
               </div>
               <div style="text-align:right;">
-                <div style="font-size:14px;font-weight:600;color:var(--primary-light);">${s.spellingAccuracy || 0}%</div>
+                <div style="font-size:14px;font-weight:600;color:var(--primary-light);">${acc}%</div>
                 <div style="font-size:11px;color:var(--text-muted);">正确率</div>
               </div>
             </div>
-          `).join('')}
+            `;
+  }).join('')}
         </div>
       ` : ''}
     </div>
@@ -172,19 +180,18 @@ export async function renderProgress(container) {
 }
 
 function calculateStreak(sessions) {
-    if (sessions.length === 0) return 0;
-    const dates = [...new Set(sessions.map(s => s.date))];
-    dates.sort((a, b) => b.localeCompare(a));
+  if (sessions.length === 0) return 0;
+  const dates = [...new Set(sessions.map(s => (s.startedAt || s.started_at).split('T')[0]))];
 
-    let streak = 0;
-    const today = new Date();
-    for (let i = 0; i < dates.length; i++) {
-        const expected = new Date(today);
-        expected.setDate(expected.getDate() - i);
-        const expectedStr = expected.toISOString().split('T')[0];
-        if (dates[i] === expectedStr) {
-            streak++;
-        } else { break; }
-    }
-    return streak;
+  let streak = 0;
+  const today = new Date();
+  for (let i = 0; i < dates.length; i++) {
+    const expected = new Date(today);
+    expected.setDate(expected.getDate() - i);
+    const expectedStr = expected.toISOString().split('T')[0];
+    if (dates[i] === expectedStr) {
+      streak++;
+    } else { break; }
+  }
+  return streak;
 }
