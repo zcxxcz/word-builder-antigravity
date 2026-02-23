@@ -48,7 +48,7 @@ app.post('/api/generate', async (req, res) => {
                 messages: [
                     {
                         role: 'system',
-                        content: '你是一个初中英语教学助手。请严格按要求返回JSON格式数据。'
+                        content: '你是一个初中英语教学助手。只输出纯JSON，不要任何markdown或代码块，不要有```，直接输出{}。'
                     },
                     {
                         role: 'user',
@@ -56,15 +56,14 @@ app.post('/api/generate', async (req, res) => {
                     }
                 ],
                 temperature: 0.3,
-                max_tokens: 300,
-                response_format: { type: 'json_object' }
+                max_tokens: 400
             })
         });
 
         if (!response.ok) {
             const errText = await response.text();
             console.error('DeepSeek API error:', response.status, errText);
-            return res.status(502).json({ error: 'DeepSeek API failed' });
+            return res.status(502).json({ error: `DeepSeek API failed: ${response.status} — ${errText}` });
         }
 
         const data = await response.json();
@@ -74,8 +73,10 @@ app.post('/api/generate', async (req, res) => {
             return res.status(502).json({ error: 'Empty response from DeepSeek' });
         }
 
+        // Strip any markdown code fences the model may still add
+        const cleaned = content.replace(/```json?\s*/gi, '').replace(/```/g, '').trim();
         try {
-            const parsed = JSON.parse(content);
+            const parsed = JSON.parse(cleaned);
             res.json({
                 meaningCn: parsed.meaning_cn || parsed.meaningCn || '',
                 example1: parsed.example1 || '',
@@ -83,7 +84,7 @@ app.post('/api/generate', async (req, res) => {
             });
         } catch (parseErr) {
             console.error('Failed to parse DeepSeek response:', content);
-            res.status(502).json({ error: 'Invalid JSON from DeepSeek' });
+            res.status(502).json({ error: 'Invalid JSON from DeepSeek', raw: content });
         }
     } catch (err) {
         console.error('DeepSeek proxy error:', err);
