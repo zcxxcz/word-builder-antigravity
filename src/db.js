@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
     relapseCap: 10,
     ttsEnabled: true,
     ttsRate: 0.9,
+    activeWordlistId: null, // null = all wordlists
 };
 
 export async function getSetting(key) {

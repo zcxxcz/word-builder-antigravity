@@ -7,17 +7,17 @@ import { navigateTo } from '../router.js';
 import db from '../db.js';
 
 export async function renderToday(container) {
-    const stats = await getTodayStats();
+  const stats = await getTodayStats();
 
-    // Check today's sessions for streak
-    const today = new Date().toISOString().split('T')[0];
-    const sessions = await db.sessions.where('date').equals(today).toArray();
-    const todayCompleted = sessions.length > 0;
+  // Check today's sessions for streak
+  const today = new Date().toISOString().split('T')[0];
+  const sessions = await db.sessions.where('date').equals(today).toArray();
+  const todayCompleted = sessions.length > 0;
 
-    // Calculate streak (simple: count consecutive days with sessions)
-    const streak = await calculateStreak();
+  // Calculate streak (simple: count consecutive days with sessions)
+  const streak = await calculateStreak();
 
-    container.innerHTML = `
+  container.innerHTML = `
     <div class="page">
       <div class="page-header">
         <h1 class="page-title">今日学习</h1>
@@ -26,6 +26,11 @@ export async function renderToday(container) {
 
       <div class="today-hero">
         <p class="today-greeting">${getGreeting()}</p>
+        ${stats.activeListExhausted ? `
+        <div style="background:var(--warning-bg, rgba(251,191,36,0.15));border:1px solid rgba(251,191,36,0.3);border-radius:var(--radius);padding:10px 14px;margin:8px 0;font-size:13px;color:var(--warning, #fbbf24);line-height:1.5;">
+          📢 「${stats.activeListName}」的新词已学完！新词将从其他词表补充。
+        </div>
+        ` : ''}
         ${streak > 0 ? `<div class="today-streak">🔥 连续打卡 ${streak} 天</div>` : ''}
         
         <div class="stat-grid" style="margin-top:16px;">
@@ -85,29 +90,29 @@ export async function renderToday(container) {
     </div>
   `;
 
-    // Event listeners
-    const startAll = container.querySelector('#start-all');
-    const startReview = container.querySelector('#start-review');
-    const startNew = container.querySelector('#start-new');
+  // Event listeners
+  const startAll = container.querySelector('#start-all');
+  const startReview = container.querySelector('#start-review');
+  const startNew = container.querySelector('#start-new');
 
-    if (startAll) startAll.onclick = () => startStudy('all');
-    if (startReview) startReview.onclick = () => startStudy('review');
-    if (startNew) startNew.onclick = () => startStudy('new');
+  if (startAll) startAll.onclick = () => startStudy('all');
+  if (startReview) startReview.onclick = () => startStudy('review');
+  if (startNew) startNew.onclick = () => startStudy('new');
 
-    // "再练5分钟" button
-    const practiceMore = container.querySelector('#practice-more');
-    if (practiceMore) practiceMore.onclick = () => startStudy('review');
+  // "再练5分钟" button
+  const practiceMore = container.querySelector('#practice-more');
+  if (practiceMore) practiceMore.onclick = () => startStudy('review');
 }
 
 function startStudy(mode) {
-    // Store mode in session storage for the study page to pick up
-    sessionStorage.setItem('studyMode', mode);
-    navigateTo('study');
+  // Store mode in session storage for the study page to pick up
+  sessionStorage.setItem('studyMode', mode);
+  navigateTo('study');
 }
 
 async function renderTodayReport(sessions) {
-    const latest = sessions[sessions.length - 1];
-    return `
+  const latest = sessions[sessions.length - 1];
+  return `
     <div class="report-card">
       <div class="report-title">✅ 今日已完成</div>
       <div class="report-subtitle">继续保持！</div>
@@ -136,26 +141,26 @@ async function renderTodayReport(sessions) {
 }
 
 async function calculateStreak() {
-    const sessions = await db.sessions.orderBy('date').reverse().toArray();
-    if (sessions.length === 0) return 0;
+  const sessions = await db.sessions.orderBy('date').reverse().toArray();
+  if (sessions.length === 0) return 0;
 
-    const dates = [...new Set(sessions.map(s => s.date))];
-    dates.sort((a, b) => b.localeCompare(a)); // Newest first
+  const dates = [...new Set(sessions.map(s => s.date))];
+  dates.sort((a, b) => b.localeCompare(a)); // Newest first
 
-    let streak = 0;
-    const today = new Date();
+  let streak = 0;
+  const today = new Date();
 
-    for (let i = 0; i < dates.length; i++) {
-        const expected = new Date(today);
-        expected.setDate(expected.getDate() - i);
-        const expectedStr = expected.toISOString().split('T')[0];
+  for (let i = 0; i < dates.length; i++) {
+    const expected = new Date(today);
+    expected.setDate(expected.getDate() - i);
+    const expectedStr = expected.toISOString().split('T')[0];
 
-        if (dates[i] === expectedStr) {
-            streak++;
-        } else {
-            break;
-        }
+    if (dates[i] === expectedStr) {
+      streak++;
+    } else {
+      break;
     }
+  }
 
-    return streak;
+  return streak;
 }
